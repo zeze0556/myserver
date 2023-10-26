@@ -15,8 +15,9 @@ use hyper::{Body, Request, Response};
 use std::convert::Infallible;
 use nix::sys::signal::{kill, Signal};
 use nix::sys::wait::{waitpid, WaitStatus};
+use crate::api_error::ApiError; // 使用相对路径
 
-pub async fn ws_handler(mut req: Request<Body>) -> Result<Response<Body>, Infallible> {
+pub async fn ws_handler(mut req: Request<Body>) -> Result<Response<Body>, ApiError> {
     if hyper_tungstenite::is_upgrade_request(&req) {
         let Ok((response, websocket)) = hyper_tungstenite::upgrade(&mut req, None) else {todo!()};
         tokio::spawn(async move {

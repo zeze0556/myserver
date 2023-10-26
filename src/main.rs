@@ -13,6 +13,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use tungstenite::accept;
 use tokio::sync::mpsc;
+use std::collections::HashMap;
 use hyper_tungstenite::{tungstenite, HyperWebsocket};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::{
@@ -31,15 +32,14 @@ use std::panic;
 use std::process::{Command, Output};
 #[path ="./command.rs"]
 mod command;
-
+mod api_error;
+use crate::api_error::ApiError; // 使用相对路径
+mod http_user;
 mod remoteshell;
 
 use crate::config::CONFIG;
-// Define an app state to share it across the route handlers and middlewares.
-struct State(u64);
 
-
-async fn ws_handler(mut req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn ws_handler(mut req: Request<Body>) -> Result<Response<Body>, ApiError> {
     let ver = req.version();
     if hyper_tungstenite::is_upgrade_request(&req) {
         let Ok((response, websocket)) = hyper_tungstenite::upgrade(&mut req, None) else {todo!()};
@@ -54,7 +54,7 @@ async fn ws_handler(mut req: Request<Body>) -> Result<Response<Body>, Infallible
     Ok(response)
 }
 
-async fn handle_ws_connection(websocket: HyperWebsocket)->Result<Response<Body>, Infallible>{
+async fn handle_ws_connection(websocket: HyperWebsocket)->Result<Response<Body>, ApiError>{
     let Ok(websocket) = websocket.await else { todo!() };
     //let websockt2 = websocket.close();
     let (mut tx, mut rx) = websocket.split();
@@ -186,7 +186,7 @@ async fn handle_ws_connection(websocket: HyperWebsocket)->Result<Response<Body>,
     Ok(response)
 }
 
-async fn handle_disk_info(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn handle_disk_info(req: Request<Body>) -> Result<Response<Body>, ApiError> {
         match disk::get_disk_info() {
             Ok(disk_info) => {
                 let response_json = json!({
@@ -224,7 +224,7 @@ async fn handle_disk_info(_req: Request<Body>) -> Result<Response<Body>, Infalli
         }
 }
 
-async fn handle_command_run(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn handle_command_run(req: Request<Body>) -> Result<Response<Body>, ApiError> {
     // 从请求的 Body 中获取 JSON 数据
     let body_bytes = hyper::body::to_bytes(req.into_body()).await.unwrap();
     let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
@@ -244,7 +244,6 @@ async fn handle_command_run(req: Request<Body>) -> Result<Response<Body>, Infall
                 .output();
             let response_json = match cmd {
                 Ok(result) => {
-                    //println!("exec result={:?}", result);
                     // 设置 ret 字段的值，根据命令执行是否成功来决定
                     let ret_value = result.status.code();//().unwrap_or(-1);
                     let std_out = String::from_utf8(result.stdout).unwrap();
@@ -322,7 +321,7 @@ fn write_json_file(file_name: &str, content: &str) -> Result<(), io::Error> {
     fs::write(file_path, content)
 }
 
-async fn handle_file_get(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn handle_file_get(req: Request<Body>) -> Result<Response<Body>, ApiError> {
     let (parts, body) = req.into_parts();
     // 使用 .map 处理请求体内容
     let body_bytes = hyper::body::to_bytes(body)
@@ -372,7 +371,7 @@ async fn handle_file_get(req: Request<Body>) -> Result<Response<Body>, Infallibl
     }
 }
 
-async fn handle_file_put(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn handle_file_put(req: Request<Body>) -> Result<Response<Body>, ApiError> {
     let (parts, body) = req.into_parts();
     // 使用 .map 处理请求体内容
     let body_bytes = hyper::body::to_bytes(body)
@@ -422,7 +421,7 @@ async fn handle_file_put(req: Request<Body>) -> Result<Response<Body>, Infallibl
     }
 }
 
-async fn handle_config_file(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn handle_config_file(req: Request<Body>) -> Result<Response<Body>, ApiError> {
     // 获取请求路径中的文件名（*部分）
     let (parts, body) = req.into_parts();
     let path = parts.uri.path();
@@ -512,7 +511,7 @@ async fn handle_config_file(req: Request<Body>) -> Result<Response<Body>, Infall
 
 
 // A middleware which logs an http request.
-async fn logger(req: Request<Body>) -> Result<Request<Body>, Infallible> {
+async fn logger(req: Request<Body>) -> Result<Request<Body>, ApiError> {
     println!("{} {} {}", req.remote_addr(), req.method(), req.uri().path());
     Ok(req)
 }
@@ -520,17 +519,28 @@ async fn logger(req: Request<Body>) -> Result<Request<Body>, Infallible> {
 // Define an error handler function which will accept the `routerify::Error`
 // and the request information and generates an appropriate response.
 async fn error_handler(err: routerify::RouteError, _: RequestInfo) -> Response<Body> {
-    eprintln!("{}", err);
-    Response::builder()
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .body(Body::from(format!("Something went wrong: {}", err)))
-        .unwrap()
+    eprintln!("{:?}", err);
+    let api_err = err.downcast::<ApiError>().unwrap();
+    match api_err.as_ref() {
+        ApiError::Unauthorized => {
+            Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .body(Body::from(format!("{:?}", api_err)))
+                .unwrap()
+        }
+        _ => {
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from(format!("Something went wrong: {:?}", api_err)))
+                .unwrap()
+        }
+    }
 }
 
-async fn handle_static_file(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn handle_static_file(req: Request<Body>) -> Result<Response<Body>, ApiError> {
     //let resp = static_file.clone().serve(req)?;
     let static_file = Static::new("dist");
-    let resp = match(static_file.serve(req).await) {
+    let resp = match static_file.serve(req).await {
         Ok(resp)=> {
             resp
         }
@@ -545,28 +555,33 @@ async fn handle_static_file(req: Request<Body>) -> Result<Response<Body>, Infall
     Ok(resp)
 }
 
-fn router() -> Router<Body, Infallible> {
+async fn my_post_middleware_handler(res: Response<Body>) -> Result<Response<Body>, ApiError> {
+    // Do some changes if required.
+    let transformed_res = res;
+
+    // Then return the transformed response object to be consumed by the other middlewares.
+    Ok(transformed_res)
+}
+
+fn router() -> Router<Body, ApiError> {
     let ws_route = Router::builder()
-        //.data(sender.clone())
         .any_method("/sys_stat", ws_handler)
         .any_method("/shell", remoteshell::ws_handler)
         .build()
         .unwrap();
-
     Router::builder()
     // Specify the state data which will be available to every route handlers,
     // error handler and middlewares.
-        //.data(sender.clone())
-        .data(State(100))
         .middleware(Middleware::pre(logger))
+        .middleware(Middleware::pre(http_user::auth_check))
+        .middleware(Middleware::post(my_post_middleware_handler))
+        .post("/api/login",http_user::handle_login)
         .post("/api/disk/info",handle_disk_info)
         .post("/api/command/run",handle_command_run)
         .post("/api/file/get", handle_file_get)
         .put("/api/file/put", handle_file_put)
         .scope("/api/ws", ws_route)
         .get("*", handle_static_file)
-        //.add(Route::from(Method::PATCH, "/asd").using(request_handler))
-        //.build();
         .err_handler_with_info(error_handler)
         .build()
         .unwrap()
