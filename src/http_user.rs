@@ -219,3 +219,41 @@ pub async fn handle_login(mut req: Request<Body>) -> Result<Response<Body>, ApiE
         }
     }
 }
+
+pub async fn handle_userinfo(mut req: Request<Body>) -> Result<Response<Body>, ApiError> {
+    if let Some(header) = req.headers().get("Cookie") {
+        if let Ok(header_value) = header.to_str() {
+            let cookies: Vec<Cookie<'_>> = header_value
+                .split("; ")
+                .filter_map(|s| Cookie::parse(s).ok())
+                .collect();
+            for cookie in cookies {
+                if cookie.name() == "api_token" {
+                    // Found the "api_token" cookie
+                    let api_token = cookie.value();
+                    let mut user_store = global_user_store.lock().unwrap();
+                    match user_store.get(api_token) {
+                        None => {
+                            return Err(ApiError::Unauthorized);
+                        }
+                        Some(user) => {
+                            let response_json = json!({
+                                "ret": 0,
+                                "data": {
+                                    "username": user.username
+                                }
+                            });
+                            let response = Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(serde_json::to_string(&response_json).unwrap()))
+                                .unwrap();
+                            return Ok(response)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return Err(ApiError::Unauthorized);
+}

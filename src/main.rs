@@ -575,6 +575,7 @@ fn router() -> Router<Body, ApiError> {
         .middleware(Middleware::pre(logger))
         .middleware(Middleware::pre(http_user::auth_check))
         .middleware(Middleware::post(my_post_middleware_handler))
+        .post("/api/userinfo",http_user::handle_userinfo)
         .post("/api/login",http_user::handle_login)
         .post("/api/disk/info",handle_disk_info)
         .post("/api/command/run",handle_command_run)
