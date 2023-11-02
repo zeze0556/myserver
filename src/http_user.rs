@@ -65,7 +65,7 @@ pub async fn auth_check(req: Request<Body>) -> Result<Request<Body>, ApiError> {
                         .filter_map(|s| Cookie::parse(s).ok())
                         .collect();
                     for cookie in cookies {
-                        if cookie.name() == "api_token" {
+                        if cookie.name() == "mynas_api_token" {
                             // Found the "api_token" cookie
                             let api_token = cookie.value();
                             let mut user_store = global_user_store.lock().unwrap();
@@ -158,7 +158,7 @@ pub async fn handle_login(mut req: Request<Body>) -> Result<Response<Body>, ApiE
                                 })
                                 .collect();
                             let mut cookie_jar = CookieJar::new();
-                            cookie_jar.add_original(Cookie::build(("api_token", api_token.clone())).path("/"));
+                            cookie_jar.add_original(Cookie::build(("mynas_api_token", api_token.clone())).path("/"));
                             let mut user_store = global_user_store.lock().unwrap();
                             user_store.insert(api_token.to_string(), HttpUser::new(&api_token,username));
                             println!("user_store=={:?}", user_store);
@@ -228,7 +228,7 @@ pub async fn handle_userinfo(mut req: Request<Body>) -> Result<Response<Body>, A
                 .filter_map(|s| Cookie::parse(s).ok())
                 .collect();
             for cookie in cookies {
-                if cookie.name() == "api_token" {
+                if cookie.name() == "mynas_api_token" {
                     // Found the "api_token" cookie
                     let api_token = cookie.value();
                     let mut user_store = global_user_store.lock().unwrap();

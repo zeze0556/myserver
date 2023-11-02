@@ -3,7 +3,11 @@ use routerify::prelude::*;
 use serde_json::{Value,json};
 use tokio::net::TcpStream;
 use std::fs;
+use std::fs::File;
+use std::os::fd::FromRawFd;
+use std::os::fd::{AsRawFd, RawFd};
 use std::io;
+use std::io::Read;
 use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, UPGRADE, CONNECTION, HeaderValue};
 use routerify::{Middleware, Router, RouterService, RequestInfo};
 use hyper_staticfile::Static;
@@ -29,7 +33,7 @@ mod config;
 mod disk;
 mod sysstat;
 use std::panic;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 #[path ="./command.rs"]
 mod command;
 mod api_error;
@@ -62,9 +66,8 @@ async fn handle_ws_connection(websocket: HyperWebsocket)->Result<Response<Body>,
     // 创建一个通道，用于从 iostat_worker 发送消息到 handle_ws_connection
     let (iostat_sender, mut iostat_receiver) = mpsc::channel::<Message>(10);
     let sender = iostat_sender.clone();
-
     // 启动 iostat_worker 任务，并传递 iostat_sender 用于发送消息
-    tokio::spawn(sysstat::MyNasStatus::iostat_worker(iostat_sender));
+    tokio::spawn(sysstat::MyNasStatus::iostat_worker(iostat_sender.clone()));
 
     // 创建一个任务，用于将来自 iostat_worker 的消息发送到 WebSocket 客户端
     tokio::spawn(async move {
@@ -112,8 +115,65 @@ async fn handle_ws_connection(websocket: HyperWebsocket)->Result<Response<Body>,
                                 .filter_map(|v| v.as_str())
                                 .collect();
                             let cmd = Command::new(cmd)
-                                       .args(args_v)
-                                       .output();
+                                .args(args_v)
+                                .stdout(Stdio::piped()) // 捕获标准输出
+                                .spawn();
+                            let mut child = match cmd {
+                                Ok(child) => child,
+                                Err(e) => {
+                                    eprintln!("Failed to start the command: {}", e);
+                                    let response_json = json!({
+                                        "ret": -2,
+                                        "type": "command",
+                                        "error": format!("{:?}", e),
+                                        "key": key_value,
+                                        "req": parsed_json,
+                                    });
+                                    let response_str = serde_json::to_string(&response_json)
+                                        .unwrap_or_else(|e| {
+                                            eprintln!("Failed to serialize JSON: {}", e);
+                                            String::from("{\"ret\":-1,\"error\":\"Serialization error\"}")
+                                        });
+
+                                    let message = Message::Text(response_str);
+                                    if let Err(e) = sender.send(message).await {
+                                        eprintln!("Failed to send message to WebSocket client: {}", e);
+                                        break;
+                                    }
+                                    break;
+                                }
+                            };
+                            // 从子进程中获取标准输出的句柄
+                            let stdout = child.stdout.take().unwrap();
+                            let mut input = unsafe {File::from_raw_fd(stdout.as_raw_fd())};//unsafe { File::from_raw_fd(stdout.as_raw_fd()) };
+                            let sender2 = iostat_sender.clone();
+                            tokio::spawn(async move {
+                                let mut buf = vec![0; 1024];
+                                loop {
+                                    match input.read(&mut buf) {
+                                        Err(err) => {
+                                            println!("line: {} Error reading from stream: {}, read={:?}", line!(), err,input);
+                                            /*
+                                            if let Err(_e) = sender2.send(Message::Close(None)).await {
+                                            }*/
+                                            break;
+                                        }
+                                        Ok(0) => {
+                                            println!("eof===");
+                                            break; // EOF from PTY
+                                        }
+                                        Ok(n) => {
+                                            println!("out={:?}", String::from_utf8_lossy(&buf[..n]).to_string());
+                                            if let Err(e) = sender2.send(Message::Text(String::from_utf8_lossy(&buf[..n]).to_string())).await {
+                                                println!("send remote shell connection closed. error:{:?}", e);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                println!("end command");
+                            });
+                            /*
                             let response_json = match cmd {
                                 Ok(result) => {
                                     // 设置 ret 字段的值，根据命令执行是否成功来决定
@@ -160,6 +220,7 @@ async fn handle_ws_connection(websocket: HyperWebsocket)->Result<Response<Body>,
                                 eprintln!("Failed to send message to WebSocket client: {}", e);
                                 break;
                             }
+                            */
 
                         }
                         Some("ping") => {

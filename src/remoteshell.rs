@@ -15,13 +15,22 @@ use hyper::{Body, Request, Response};
 use std::convert::Infallible;
 use nix::sys::signal::{kill, Signal};
 use nix::sys::wait::{waitpid, WaitStatus};
+use std::collections::HashMap;
+use serde::Deserialize;
 use crate::api_error::ApiError; // 使用相对路径
+
+#[derive(Deserialize)]
+#[derive(Debug)]
+struct CommandArgs {
+    command: String,
+    args: Option<Vec<String>>,
+}
 
 pub async fn ws_handler(mut req: Request<Body>) -> Result<Response<Body>, ApiError> {
     if hyper_tungstenite::is_upgrade_request(&req) {
         let Ok((response, websocket)) = hyper_tungstenite::upgrade(&mut req, None) else {todo!()};
         tokio::spawn(async move {
-             let _ = handle_xterm_session(websocket) .await;
+             let _ = handle_xterm_session(req,websocket) .await;
         });
         return Ok(response)
     }
@@ -31,7 +40,26 @@ pub async fn ws_handler(mut req: Request<Body>) -> Result<Response<Body>, ApiErr
     Ok(response)
 }
 
-async fn handle_xterm_session(websocket: HyperWebsocket) -> Result<(), Error> {
+async fn handle_xterm_session(mut req:Request<Body>,websocket: HyperWebsocket) -> Result<(), Error> {
+    // 获取查询参数 "args" 的值
+    let query_params = req.uri().query().unwrap_or("");
+    //let args_param = query_params.get("args").unwrap_or("");
+    // 将 URL 编码的查询参数解码为 JSON 字符串
+    //let decoded_args = urlencoding::decode(args_param).unwrap_or("".to_string());
+    // 解析 JSON 数据
+    //let command_args: CommandArgs = serde_json::from_str(&decoded_args).unwrap();
+    let params: HashMap<String, String> = req
+        .uri()
+        .query()
+        .map(|v| {
+            url::form_urlencoded::parse(v.as_bytes())
+                .into_owned()
+                .collect()
+        })
+        .unwrap_or_else(HashMap::new);
+    let default = String::from("{\"command\":\"/bin/sh\"}");
+    let args = params.get("args").unwrap_or(&default);
+    let command_args: CommandArgs = serde_json::from_str(args).unwrap();
     let Ok(websocket) = websocket.await else { todo!() };
     let mut master_fd = posix_openpt(nix::fcntl::OFlag::O_RDWR).expect("error posix_openpt");
 
@@ -134,10 +162,24 @@ async fn handle_xterm_session(websocket: HyperWebsocket) -> Result<(), Error> {
 
             // Now the child process is set up with the PTY
             // You can execute shell or other programs here
-            let shell_cmd = std::process::Command::new("/bin/sh").spawn();
+            //let shell_cmd = std::process::Command::new("/bin/sh").spawn();
+            //let shell_cmd = std::process::Command::new(cmd).spawn();
+            println!("run command=={:?}", command_args);
+            //let mut shell_cmd = std::process::Command::new(command_args.command);
+            let shell_cmd = match command_args.args {
+                Some(ref cmd_args) => {
+                    std::process::Command::new(command_args.command)
+                        .args(cmd_args)
+                        .spawn()
+                }
+                None => {
+                    std::process::Command::new(command_args.command)
+                        .spawn()
+                }
+            };
             shell_cmd?.wait().expect("error wait");
             // Exit the child process
-            println!("exit child");
+            println!("exit");
             std::process::exit(0);
         }
         Err(e) => {
