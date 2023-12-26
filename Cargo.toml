@@ -33,3 +33,4 @@ pwhash = "1.0.0"
 cookie = "0.18.0"
 rand = {version="0.8.5", features=["std","std_rng"]}
 url = "2.4.1"
+routerify-websocket = "3.0.0"

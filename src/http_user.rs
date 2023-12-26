@@ -16,6 +16,7 @@ use cookie::{Cookie, CookieJar};
 use rand::Rng;
 use core::fmt;
 use std::sync::Mutex;
+use std::process::{Command, Output};
 use crate::api_error::ApiError;
 // User data structure to store API Tokens
 #[derive(Clone)]
@@ -86,6 +87,19 @@ pub async fn auth_check(req: Request<Body>) -> Result<Request<Body>, ApiError> {
     }
 }
 
+fn password_verify(password: &str, salt: &str) -> bool {
+    // Execute the external script (check.sh) with password and salt as arguments
+    let output = Command::new("./scripts/check.sh")
+        .arg(password)
+        .arg(salt)
+        .output()
+        .expect("Failed to execute external script");
+
+    // Check the output of the script
+    let script_output = String::from_utf8_lossy(&output.stdout);
+    script_output.trim() == "ok"
+}
+
 pub async fn handle_login(mut req: Request<Body>) -> Result<Response<Body>, ApiError> {
     //let (parts, body) = req.into_parts();
     let body = req.body_mut();
@@ -141,7 +155,8 @@ pub async fn handle_login(mut req: Request<Body>) -> Result<Response<Body>, ApiE
                     } else {
 		                    password = user.passwd.unwrap()
 	                  }
-                    match unix::verify(input_password, &password) {
+                    //match unix::verify(input_password, &password) {
+                    match password_verify(input_password, &password) {
                         true => {
                             let response_json = json!({
                                 "ret": 0,

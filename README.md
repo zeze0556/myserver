@@ -20,3 +20,5 @@ make test
 3. samba
 4. lsblk
 获取硬盘信息
+5. perl
+验证密码
