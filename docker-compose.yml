@@ -1,0 +1,15 @@
+services:
+  mynas_golang:
+    container_name: mynas_golang
+    build:
+      context: ./docker
+      dockerfile: golang.dockerfile
+    volumes:
+    - ./app:/app:rw
+    - ./root:/root:rw
+    entrypoint: "/root/entry.sh"
+    environment:
+    - DISPLAY=$DISPLAY
+    - LANG=zh-CN.UTF-8
+    network_mode: "host"
+
